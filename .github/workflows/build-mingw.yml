@@ -12,9 +12,12 @@ jobs:
     runs-on: windows-latest
     env:
       libraryName: antlr4-runtime
-      cmakeInstallationPath: antlr4-runtime-installation
+      cmakeNativeInstallationPath: antlr4-runtime-native-installation
+      cmakeEmscriptenInstallationPath: antlr4-runtime-emscripten-installation
+      emsdkTagName: 3.1.25
       tagName: v4.11.1
       mingwTargetZip: antlr4-runtime-${{ github.ref_name }}-winlibs-x86_64-posix-seh-gcc-12.2.0-mingw-w64ucrt-10.0.0-r4.zip
+      emscriptenTargetZip: antlr4-runtime-${{ github.ref_name }}-emscripten-emsdk-3.1.25.zip
     steps:
         - uses: actions/checkout@v3
           with:
@@ -22,21 +25,32 @@ jobs:
             path: antlr4
             submodules: true
             ref: ${{ env.tagName }}
-           
+            
+        - name: git clone emsdk
+          shell: cmd
+          run: git clone --recursive https://github.com/emscripten-core/emsdk.git && cd emsdk && git checkout ${{ env.emsdkTagName }}
+          
         - name: curl cmake-3.22.2-windows-x86_64.zip
           shell: cmd
           run: |
             curl https://github.com/Kitware/CMake/releases/download/v3.22.2/cmake-3.22.2-windows-x86_64.zip -L --output cmake-3.22.2-windows-x86_64.zip &&^
             dir &&^
             7z.exe x cmake-3.22.2-windows-x86_64.zip
-          
+            
+        - name: curl python-3.7.9-amd64-portable.zip
+          shell: cmd
+          run: |
+            curl https://github.com/dirkarnez/python-portable/releases/download/v3.7.9/python-3.7.9-amd64-portable.zip -L --output python-3.7.9-amd64-portable.zip &&^
+            dir &&^
+            7z.exe x python-3.7.9-amd64-portable.zip -o"python-3.7.9-amd64-portable"
+            
         - name: curl x86_64-8.1.0-release-posix-seh-rt_v6-rev0.7z
           shell: cmd
           run:  |
             curl https://github.com/brechtsanders/winlibs_mingw/releases/download/12.2.0-15.0.7-10.0.0-ucrt-r4/winlibs-x86_64-posix-seh-gcc-12.2.0-mingw-w64ucrt-10.0.0-r4.zip -L -O -J &&^
             7z.exe x winlibs-x86_64-posix-seh-gcc-12.2.0-mingw-w64ucrt-10.0.0-r4.zip
             
-        - name: set PATH, check mingw version, cmake generate, build and install
+        - name: mingw64 build
           shell: cmd
           run: |
             set PATH=^
@@ -45,15 +59,47 @@ jobs:
             ${{ github.workspace }}\PortableGit-2.38.1-64-bit\bin;^
             ${{ github.workspace }}\cmake-3.22.2-windows-x86_64\bin;^
             C:\Windows\System32;
-            set CD_LINUX=%CD:\=/%
             gcc --version &&^
             cd antlr4\runtime\Cpp &&^
             cmake.exe -G "MinGW Makefiles" ^
             -DCMAKE_BUILD_TYPE=Release ^
             -DBUILD_SHARED_LIBS=OFF ^
             -DANTLR4_INSTALL=ON ^
-            -DCMAKE_INSTALL_PREFIX="cmake-build/${{ env.cmakeInstallationPath }}" -B./cmake-build &&^
-            cd cmake-build &&^
+            -DCMAKE_INSTALL_PREFIX="cmake-mingw64-build/${{ env.cmakeNativeInstallationPath }}" -B./cmake-mingw64-build  &&^
+            cd cmake-mingw64-build &&^
+            cmake --build . &&^
+            cmake --install . 
+            
+            
+        - name: emscripten build
+          shell: cmd
+          run: |
+            SET EMSDK=${{ github.workspace }}\emsdk
+            SET EMSDK_NODE=%EMSDK%\node\14.18.2_64bit\bin\node.exe
+            SET EMSDK_PYTHON=%EMSDK%\python\3.9.2-nuget_64bit\python.exe
+            SET JAVA_HOME=%EMSDK%\java\8.152_64bit
+            set PATH=^
+            ${{ github.workspace }}\mingw64;^
+            ${{ github.workspace }}\mingw64\bin;^
+            ${{ github.workspace }}\python-3.7.9-amd64-portable;^
+            ${{ github.workspace }}\python-3.7.9-amd64-portable\Scripts;^
+            ${{ github.workspace }}\PortableGit-2.38.1-64-bit\bin;^
+            ${{ github.workspace }}\cmake-3.22.2-windows-x86_64\bin;^
+            C:\Windows\System32;^
+            %EMSDK%;^
+            %EMSDK%\upstream\emscripten;^
+            %EMSDK%\node\14.18.2_64bit\bin
+            cd /d %EMSDK% &&^
+            .\emsdk install latest &&^
+            .\emsdk activate latest &&^
+            cd /d "${{ github.workspace }}\antlr4\runtime\Cpp" &&^
+            cmake.exe -G "MinGW Makefiles" ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_TOOLCHAIN_FILE="%EMSDK:\=/%/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake" ^
+            -DBUILD_SHARED_LIBS=OFF ^
+            -DANTLR4_INSTALL=ON ^
+            -DCMAKE_INSTALL_PREFIX="cmake-emscripten-build/${{ env.cmakeEmscriptenInstallationPath }}" -B./cmake-emscripten-build &&^
+            cd cmake-emscripten-build &&^
             cmake --build . &&^
             cmake --install . 
             
@@ -61,12 +107,26 @@ jobs:
           uses: thedoctor0/zip-release@master
           with:
             type: 'zip'
-            directory: "antlr4/runtime/Cpp/cmake-build/${{ env.cmakeInstallationPath }}"
+            directory: "antlr4/runtime/Cpp/cmake-mingw64-build/${{ env.cmakeNativeInstallationPath }}"
             filename: "${{ env.mingwTargetZip }}"
+
+        - name: Archive Release
+          uses: thedoctor0/zip-release@master
+          with:
+            type: 'zip'
+            directory: "antlr4/runtime/Cpp/cmake-emscripten-build/${{ env.cmakeEmscriptenInstallationPath }}"
+            filename: "${{ env.emscriptenTargetZip }}"
 
         - name: Release prebuilt
           uses: ncipollo/release-action@v1
           with:
-            artifacts: "antlr4/runtime/Cpp/cmake-build/${{ env.cmakeInstallationPath }}/${{ env.mingwTargetZip }}"
+            artifacts: "antlr4/runtime/Cpp/cmake-mingw64-build/${{ env.cmakeNativeInstallationPath }}/${{ env.mingwTargetZip }}"
+            allowUpdates: true
+            token: ${{ secrets.GITHUB_TOKEN }}
+
+        - name: Release prebuilt
+          uses: ncipollo/release-action@v1
+          with:
+            artifacts: "antlr4/runtime/Cpp/cmake-emscripten-build/${{ env.cmakeEmscriptenInstallationPath }}/${{ env.emscriptenTargetZip }}"
             allowUpdates: true
             token: ${{ secrets.GITHUB_TOKEN }}
